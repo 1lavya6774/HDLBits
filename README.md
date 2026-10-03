@@ -3,7 +3,7 @@
 > **A zero-friction, production-grade browser workbench & EDA simulator for Verilog HDL.**  
 > Features automated testbench synthesis (Auto-Harness), high-DPI canvas waveform inspection, live gate-level schematics, Vivado Tcl diagnostics, and 1-click EDA packaging.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2F1lavya6774%2FHDLBits)
+[![Deploy to Netlify](https://www.netlify.com/img/deploy/button.svg)](https://app.netlify.com/start/deploy?repository=https://github.com/1lavya6774/HDLBits)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Next.js](https://img.shields.io/badge/Next.js-14.2-black)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue)](https://www.typescriptlang.org/)
@@ -11,18 +11,20 @@
 
 ---
 
-## 🚀 Instant Deployment (Vercel)
+## 🚀 Instant Deployment (Netlify)
 
-Click the button below to deploy your own instance of **Verilog Studio** to Vercel in 60 seconds:
+Click the button below to deploy your own instance of **Verilog Studio** to Netlify with zero setup:
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2F1lavya6774%2FHDLBits)
+[![Deploy to Netlify](https://www.netlify.com/img/deploy/button.svg)](https://app.netlify.com/start/deploy?repository=https://github.com/1lavya6774/HDLBits)
 
-### Manual Vercel Setup:
-1. Log in to [Vercel](https://vercel.com) using your GitHub account.
-2. Click **"Add New..."** → **"Project"**.
-3. Import the repository: **`1lavya6774/HDLBits`**.
-4. Keep the default settings (Framework Preset: **Next.js**, Root Directory: `./`).
-5. Click **"Deploy"**.
+### Manual Netlify Setup (2 Steps):
+1. Go to [app.netlify.com](https://app.netlify.com) and log in with your GitHub account.
+2. Click **"Add new site"** → **"Import an existing project"** → **"GitHub"**.
+3. Select **`1lavya6774/HDLBits`**.
+4. The build settings are auto-configured by `netlify.toml`:
+   - **Build command:** `npm run build`
+   - **Publish directory:** `out`
+5. Click **"Deploy HDLBits"**! Your site is immediately built and live on Netlify's global edge network.
 
 ---
 
