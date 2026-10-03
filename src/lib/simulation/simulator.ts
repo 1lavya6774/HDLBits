@@ -10,7 +10,7 @@
  * Aborts with: "ERROR: Combinational loop detected. Delta cycle threshold exceeded."
  */
 
-import { WaveSignal, ScopeNode, ConsoleMessage, SignalSample } from '../../types/playground';
+import type { WaveSignal, ScopeNode, ConsoleMessage, SignalSample } from '../../types/playground.ts';
 
 export interface SimOptions {
   maxSimTime?: number; // In nanoseconds, default 1000ns
@@ -448,7 +448,22 @@ export class VerilogSimulator {
   }
 
   private parseAndScheduleInitialBlock(body: string, tbMod: ParsedModule, designMod: ParsedModule) {
-    const lines = body
+    // Unroll standard Verilog for-loops:
+    // for (var = start; var < end; var = var + step) begin ... end
+    let expanded = body;
+    const forLoopRegex = /for\s*\(\s*(?:integer\s+)?([a-zA-Z_]\w*)\s*=\s*(\d+)\s*;\s*\1\s*<\s*(\d+)\s*;\s*\1\s*=\s*\1\s*\+\s*(\d+)\s*\)\s*begin([\s\S]*?)end/g;
+    expanded = expanded.replace(forLoopRegex, (_, loopVar, startStr, endStr, stepStr, loopContent) => {
+      const start = parseInt(startStr, 10);
+      const end = parseInt(endStr, 10);
+      const step = parseInt(stepStr, 10) || 1;
+      let unrolled = '';
+      for (let i = start; i < end; i += step) {
+        unrolled += '\n' + loopContent.replace(new RegExp(`\\b${loopVar}\\b`, 'g'), i.toString()) + '\n';
+      }
+      return unrolled;
+    });
+
+    const lines = expanded
       .replace(/begin/g, '\n')
       .replace(/end/g, '\n')
       .split('\n')
@@ -472,6 +487,31 @@ export class VerilogSimulator {
       const standaloneDelay = line.match(/^#\s*(\d+)\s*;?$/);
       if (standaloneDelay) {
         cumulativeTime += parseInt(standaloneDelay[1], 10);
+        continue;
+      }
+
+      // Check for delayed concatenation: #10 { a, b, cin } = expr;
+      const delayedConcat = line.match(/^#\s*(\d+)\s*\{\s*([^}]+)\s*\}\s*(=|<=)\s*([^;]+);?/);
+      if (delayedConcat) {
+        cumulativeTime += parseInt(delayedConcat[1], 10);
+        const vars = delayedConcat[2].split(',').map(v => v.trim());
+        const expr = delayedConcat[4].trim();
+        const scheduledTime = cumulativeTime;
+        this.scheduleEvent(scheduledTime, () => {
+          this.assignTbConcatenation(vars, expr, tbMod, designMod);
+        });
+        continue;
+      }
+
+      // Check for direct concatenation: { a, b, cin } = expr;
+      const directConcat = line.match(/^\{\s*([^}]+)\s*\}\s*(=|<=)\s*([^;]+);?/);
+      if (directConcat) {
+        const vars = directConcat[1].split(',').map(v => v.trim());
+        const expr = directConcat[3].trim();
+        const scheduledTime = cumulativeTime;
+        this.scheduleEvent(scheduledTime, () => {
+          this.assignTbConcatenation(vars, expr, tbMod, designMod);
+        });
         continue;
       }
 
@@ -501,6 +541,34 @@ export class VerilogSimulator {
         continue;
       }
     }
+  }
+
+  private assignTbConcatenation(concatVars: string[], expr: string, tbMod: ParsedModule, designMod: ParsedModule) {
+    const val = this.evaluateExpr(expr, '/tb');
+    let shift = BigInt(0);
+
+    // Assign from right to left (LSB to MSB)
+    for (let idx = concatVars.length - 1; idx >= 0; idx--) {
+      const varName = concatVars[idx].trim();
+      const sig = this.signals.get(`/tb/${varName}`);
+      if (sig) {
+        const mask = (BigInt(1) << BigInt(sig.width)) - BigInt(1);
+        const sigVal = (val >> shift) & mask;
+        shift += BigInt(sig.width);
+
+        const prevVal = sig.currentValue;
+        const prevUnknown = sig.isUnknown;
+
+        sig.currentValue = sigVal;
+        sig.isUnknown = false;
+
+        if (prevUnknown || prevVal !== sig.currentValue) {
+          this.recordSignalChange(sig);
+        }
+      }
+    }
+
+    this.propagateTbToUut(tbMod, designMod);
   }
 
   private assignTbSignal(varName: string, expr: string, tbMod: ParsedModule, designMod: ParsedModule) {
@@ -788,71 +856,120 @@ export class VerilogSimulator {
   }
 
   private evaluateExpr(expr: string, scope: string): bigint {
-    let clean = expr.trim();
+    const tokens: string[] = [];
+    const tokenRegex = /\s*(==|!=|<=|>=|<<|>>|\d+'[bBdDhHoO][0-9a-fA-F_xXzZ]+|\d+|[a-zA-Z_][a-zA-Z0-9_$]*(?:\[\s*\d+\s*(?::\s*\d+)?\s*\])?|[\(\)\+\-\&\|\^\~\!])\s*/g;
+    let m: RegExpExecArray | null;
+    while ((m = tokenRegex.exec(expr)) !== null) {
+      if (m[1]) tokens.push(m[1]);
+    }
 
-    // Strip balanced outer parentheses
-    while (clean.startsWith('(') && clean.endsWith(')')) {
-      let depth = 0;
-      let balanced = true;
-      for (let i = 0; i < clean.length - 1; i++) {
-        if (clean[i] === '(') depth++;
-        if (clean[i] === ')') depth--;
-        if (depth === 0) {
-          balanced = false;
-          break;
-        }
+    if (tokens.length === 0) return BigInt(0);
+
+    let pos = 0;
+    const peek = () => tokens[pos];
+    const consume = () => tokens[pos++];
+
+    const parsePrimary = (): bigint => {
+      const tok = peek();
+      if (!tok) return BigInt(0);
+
+      if (tok === '(') {
+        consume();
+        const val = parseOr();
+        if (peek() === ')') consume();
+        return val;
       }
-      if (balanced) {
-        clean = clean.slice(1, -1).trim();
-      } else {
-        break;
+
+      if (tok === '~' || tok === '!') {
+        const op = consume();
+        const val = parsePrimary();
+        return op === '~' ? (~val) : (val === BigInt(0) ? BigInt(1) : BigInt(0));
       }
-    }
 
-    // Verilog literals: 4'b0000, 4'd5, 8'hFF, 1'b1, 0, 1
-    const bitMatch = clean.match(/^(\d+)?'([bBdDhHoO])([0-9a-fA-F_xXzZ]+)$/);
-    if (bitMatch) {
-      const base = bitMatch[2].toLowerCase();
-      const valStr = bitMatch[3].replace(/_/g, '');
-      if (base === 'b') return BigInt('0b' + valStr.replace(/[xXzZ]/g, '0'));
-      if (base === 'h') return BigInt('0x' + valStr.replace(/[xXzZ]/g, '0'));
-      if (base === 'd') return BigInt(valStr.replace(/[xXzZ]/g, '0'));
-      if (base === 'o') return BigInt('0o' + valStr.replace(/[xXzZ]/g, '0'));
-    }
+      consume();
 
-    if (/^\d+$/.test(clean)) {
-      return BigInt(clean);
-    }
-
-    // Check inversion: ~var or !var
-    if (clean.startsWith('~') || clean.startsWith('!')) {
-      const sub = this.evaluateExpr(clean.slice(1), scope);
-      return sub === BigInt(0) ? BigInt(1) : BigInt(0);
-    }
-
-    // Binary operations: a + b, a - b, a & b, a | b, a ^ b
-    const opMatch = clean.match(/^([a-zA-Z0-9_$]+)\s*([\+\-\&\|\^])\s*([a-zA-Z0-9_$'bB]+)$/);
-    if (opMatch) {
-      const lhsVal = this.evaluateExpr(opMatch[1], scope);
-      const rhsVal = this.evaluateExpr(opMatch[3], scope);
-      const op = opMatch[2];
-      switch (op) {
-        case '+': return lhsVal + rhsVal;
-        case '-': return lhsVal - rhsVal;
-        case '&': return lhsVal & rhsVal;
-        case '|': return lhsVal | rhsVal;
-        case '^': return lhsVal ^ rhsVal;
+      // Verilog numeric literal
+      const bitMatch = tok.match(/^(\d+)?'([bBdDhHoO])([0-9a-fA-F_xXzZ]+)$/);
+      if (bitMatch) {
+        const base = bitMatch[2].toLowerCase();
+        const valStr = bitMatch[3].replace(/_/g, '');
+        if (base === 'b') return BigInt('0b' + valStr.replace(/[xXzZ]/g, '0'));
+        if (base === 'h') return BigInt('0x' + valStr.replace(/[xXzZ]/g, '0'));
+        if (base === 'd') return BigInt(valStr.replace(/[xXzZ]/g, '0'));
+        if (base === 'o') return BigInt('0o' + valStr.replace(/[xXzZ]/g, '0'));
       }
-    }
+      if (/^\d+$/.test(tok)) {
+        return BigInt(tok);
+      }
 
-    // Signal lookup
-    const sigKey = `${scope}/${clean}`;
-    const sig = this.signals.get(sigKey);
-    if (sig) {
-      return sig.currentValue;
-    }
+      // Variable with optional bit slice: name[2:0] or name[1]
+      const sliceMatch = tok.match(/^([a-zA-Z_][a-zA-Z0-9_$]*)\[\s*(\d+)(?:\s*:\s*(\d+))?\s*\]$/);
+      if (sliceMatch) {
+        const varName = sliceMatch[1];
+        const msb = parseInt(sliceMatch[2], 10);
+        const lsb = sliceMatch[3] !== undefined ? parseInt(sliceMatch[3], 10) : msb;
+        const fullVal = this.getSignalVal(`${scope}/${varName}`) 
+          ?? this.getSignalVal(`/tb/${varName}`) 
+          ?? this.getSignalVal(`/tb/uut/${varName}`) 
+          ?? BigInt(0);
+        const hi = Math.max(msb, lsb);
+        const lo = Math.min(msb, lsb);
+        const mask = (BigInt(1) << BigInt(hi - lo + 1)) - BigInt(1);
+        return (fullVal >> BigInt(lo)) & mask;
+      }
 
-    return BigInt(0);
+      // Simple identifier lookup
+      const sig = this.signals.get(`${scope}/${tok}`) 
+        || this.signals.get(`/tb/${tok}`) 
+        || this.signals.get(`/tb/uut/${tok}`);
+      if (sig && !sig.isUnknown) {
+        return sig.currentValue;
+      }
+
+      return BigInt(0);
+    };
+
+    const parseAdd = (): bigint => {
+      let left = parsePrimary();
+      while (peek() === '+' || peek() === '-') {
+        const op = consume();
+        const right = parsePrimary();
+        left = op === '+' ? left + right : left - right;
+      }
+      return left;
+    };
+
+    const parseAnd = (): bigint => {
+      let left = parseAdd();
+      while (peek() === '&') {
+        consume();
+        const right = parseAdd();
+        left = left & right;
+      }
+      return left;
+    };
+
+    const parseXor = (): bigint => {
+      let left = parseAnd();
+      while (peek() === '^') {
+        consume();
+        const right = parseAnd();
+        left = left ^ right;
+      }
+      return left;
+    };
+
+    const parseOr = (): bigint => {
+      let left = parseXor();
+      while (peek() === '|') {
+        consume();
+        const right = parseXor();
+        left = left | right;
+      }
+      return left;
+    };
+
+    return parseOr();
   }
 
   private recordSignalChange(sig: SignalDef) {

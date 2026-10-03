@@ -5,8 +5,8 @@
  * - Synthesizability Linting: flags simulation-only constructs (#delays, initial, $finish, etc.)
  */
 
-import { SynthesisMetrics } from '../../types/playground';
-import { extractModuleName } from '../export/zipPackager';
+import type { SynthesisMetrics } from '../../types/playground.ts';
+import { extractModuleName } from '../export/zipPackager.ts';
 
 export class VerilogSynthesizer {
   public synthesize(rtlCode: string): SynthesisMetrics {

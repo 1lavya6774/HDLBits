@@ -1,4 +1,4 @@
-import { ProjectFile, PresetDesign } from '../types/playground';
+import type { ProjectFile, PresetDesign } from '../types/playground.ts';
 
 export const DEFAULT_DESIGN_VERILOG = `// 4-bit synchronous up-counter with active-low asynchronous reset
 module counter (
@@ -70,6 +70,63 @@ endmodule
 `;
 
 export const PRESET_DESIGNS: PresetDesign[] = [
+  {
+    id: 'full-adder',
+    title: '1-Bit Full Adder (Combinational)',
+    description: 'Classic 1-bit full adder demonstrating Auto-Harness exhaustive truth-table simulation.',
+    designCode: `// 1-Bit Full Adder with XOR and Majority carry
+module full_adder (
+    input  wire a,
+    input  wire b,
+    input  wire cin,
+    output wire sum,
+    output wire cout
+);
+    // Sum bit: 3-input XOR
+    assign sum  = a ^ b ^ cin;
+
+    // Carry-out bit: majority function
+    assign cout = (a & b) | (b & cin) | (a & cin);
+
+endmodule
+`,
+    testbenchCode: `\`timescale 1ns / 1ps
+
+module tb_full_adder;
+    reg a;
+    reg b;
+    reg cin;
+    wire sum;
+    wire cout;
+
+    // Instantiate Unit Under Test
+    full_adder uut (
+        .a(a),
+        .b(b),
+        .cin(cin),
+        .sum(sum),
+        .cout(cout)
+    );
+
+    integer i;
+
+    initial begin
+        $dumpfile("dump.vcd");
+        $dumpvars(0, tb_full_adder);
+
+        // Exhaustive truth table for all 8 states (000 to 111)
+        for (i = 0; i < 8; i = i + 1) begin
+            {a, b, cin} = i[2:0];
+            #10;
+        end
+
+        #10;
+        $finish;
+    end
+
+endmodule
+`,
+  },
   {
     id: 'counter-4bit',
     title: '4-Bit Counter (Synchronous / Async rst_n)',

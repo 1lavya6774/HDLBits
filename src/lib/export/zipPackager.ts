@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
-import { generateVivadoTcl } from './vivadoTcl';
-import { generateQuartusTcl } from './quartusTcl';
+import { generateVivadoTcl } from './vivadoTcl.ts';
+import { generateQuartusTcl } from './quartusTcl.ts';
 
 export function extractModuleName(verilogCode: string, fallback: string): string {
   const match = verilogCode.match(/\bmodule\s+([a-zA-Z_][a-zA-Z0-9_$]*)/);
